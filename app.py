@@ -27,13 +27,14 @@ _load_env_file()
 app = Flask(__name__)
 
 # ── OpenTelemetry ────────────────────────────────────────────────────────────
+#
+# Embr injects OTEL_EXPORTER_OTLP_ENDPOINT pointing at the in-cluster OTLP
+# collector (gRPC, localhost:4317). The collector then forwards traces+metrics
+# to whatever destinations are configured via the project telemetry API
+# (see EMBR_TELEMETRY.md). We send everything to that one endpoint and let
+# Embr fan out — no hardcoded URLs in the app.
 
-# Embr sets OTEL_EXPORTER_OTLP_ENDPOINT to localhost:4317 — clear it so we control endpoints
-os.environ.pop("OTEL_EXPORTER_OTLP_ENDPOINT", None)
-os.environ.pop("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", None)
-
-OTEL_ENDPOINT = "https://production-otlp-00229c32.app.embr.azure"
-PROM_METRICS_ENDPOINT = "https://production-prometheus-embr-1a780423.app.embr.azure/api/v1/otlp/v1/metrics"
+OTEL_ENDPOINT = os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4317")
 
 _tracer = None
 _meter = None
@@ -52,8 +53,8 @@ try:
     from opentelemetry.sdk.metrics import MeterProvider
     from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
     from opentelemetry.sdk.resources import Resource
-    from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
-    from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
+    from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+    from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExporter
     from opentelemetry.instrumentation.flask import FlaskInstrumentor
     from opentelemetry.instrumentation.requests import RequestsInstrumentor
 
@@ -65,18 +66,17 @@ if _otel_available and OTEL_ENDPOINT:
     try:
         resource = Resource.create({"service.name": "home-finder", "service.version": "1.0.0"})
 
-        # Traces → OTLP collector
-        _traces_url = f"{OTEL_ENDPOINT}/v1/traces"
+        # Traces → Embr OTLP collector (gRPC, insecure inside the sandbox)
         trace_provider = TracerProvider(resource=resource)
         trace_provider.add_span_processor(
-            BatchSpanProcessor(OTLPSpanExporter(endpoint=_traces_url))
+            BatchSpanProcessor(OTLPSpanExporter(endpoint=OTEL_ENDPOINT, insecure=True))
         )
         trace.set_tracer_provider(trace_provider)
         _tracer = trace.get_tracer("home-finder")
 
-        # Metrics → Prometheus via OTLP
+        # Metrics → same Embr OTLP collector; project telemetry config fans out to Prometheus
         metric_reader = PeriodicExportingMetricReader(
-            OTLPMetricExporter(endpoint=PROM_METRICS_ENDPOINT),
+            OTLPMetricExporter(endpoint=OTEL_ENDPOINT, insecure=True),
             export_interval_millis=15000,
         )
         metric_provider = MeterProvider(resource=resource, metric_readers=[metric_reader])
@@ -95,17 +95,17 @@ if _otel_available and OTEL_ENDPOINT:
         FlaskInstrumentor.instrument_app(app)
         RequestsInstrumentor().instrument()
 
-        logger.info("OpenTelemetry initialized → traces: %s, metrics: %s", _traces_url, PROM_METRICS_ENDPOINT)
+        logger.info("OpenTelemetry initialized → OTLP endpoint: %s", OTEL_ENDPOINT)
     except Exception as exc:
         logger.warning("OpenTelemetry setup failed (continuing without): %s", exc)
 
-ENDPOINT = os.environ.get(
-    "AZURE_AI_ENDPOINT",
-    "https://ai-nimashkowski7010ai130812469137.services.ai.azure.com/api/projects/ai-nimashkowski-agent-test",
-)
-API_KEY = os.environ.get("AZURE_AI_API_KEY", "EgsUnoGDlo559BTgvPPTq1fLdzmaR7O5A1qK0C5T4GERuSDO2y4OJQQJ99ALACHYHv6XJ3w3AAAAACOGEymi")
+ENDPOINT = os.environ.get("AZURE_AI_ENDPOINT", "")
+API_KEY = os.environ.get("AZURE_AI_API_KEY", "")
 AGENT_NAME = os.environ.get("AGENT_NAME", "refi-wizard")
-AGENT_VERSION = os.environ.get("AGENT_VERSION", "5")
+AGENT_VERSION = os.environ.get("AGENT_VERSION", "1")
+
+if not ENDPOINT or not API_KEY:
+    logger.warning("AZURE_AI_ENDPOINT / AZURE_AI_API_KEY not set — /chat will fail until configured")
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 ERROR_RATE = float(os.environ.get("SYNTHETIC_ERROR_RATE", "0.15"))  # ~15% of requests
 
