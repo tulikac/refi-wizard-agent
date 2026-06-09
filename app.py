@@ -72,7 +72,7 @@ try:
 except ImportError:
     _otel_available = False
 
-if _otel_available and OTEL_ENDPOINT:
+if _otel_available and METRICS_ENDPOINT:
     try:
         resource = Resource.create({"service.name": "home-finder", "service.version": "1.0.0"})
 
