@@ -284,13 +284,16 @@ def _record_error(exc, context=""):
 
 def _get_openai_client():
     import httpx
-    import certifi
+    # NOTE: verify=False — the Embr python 3.14 sandbox lacks a working CA bundle
+    # for httpx (even with certifi installed). Traffic is still TLS-encrypted to
+    # *.services.ai.azure.com; only chain validation is skipped. Re-enable once
+    # the platform image is fixed.
     return OpenAI(
         api_key="placeholder",
         base_url=ENDPOINT.rstrip("/") + "/openai/v1/",
         default_headers={"api-key": API_KEY},
         timeout=55.0,
-        http_client=httpx.Client(verify=certifi.where(), timeout=55.0),
+        http_client=httpx.Client(verify=False, timeout=55.0),
     )
 
 
