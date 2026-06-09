@@ -36,13 +36,15 @@ app = Flask(__name__)
 
 # ── OpenTelemetry ────────────────────────────────────────────────────────────
 #
-# Embr injects OTEL_EXPORTER_OTLP_ENDPOINT pointing at the in-cluster OTLP
-# collector (gRPC, localhost:4317). The collector then forwards traces+metrics
-# to whatever destinations are configured via the project telemetry API
-# (see EMBR_TELEMETRY.md). We send everything to that one endpoint and let
-# Embr fan out — no hardcoded URLs in the app.
+# For the demo we push OTLP/HTTP directly to a Prometheus instance (with the
+# OTLP receiver enabled) and a separate traces sink. Override via env vars.
 
-OTEL_ENDPOINT = os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4317")
+# Avoid letting the Embr-injected default point us at the in-cluster collector
+os.environ.pop("OTEL_EXPORTER_OTLP_ENDPOINT", None)
+
+PROM_BASE = os.environ.get("PROMETHEUS_OTLP_URL", "https://production-prometheus-embr-ecca2565.app.embr.azure")
+METRICS_ENDPOINT = f"{PROM_BASE.rstrip('/')}/api/v1/otlp/v1/metrics"
+TRACES_ENDPOINT = os.environ.get("OTEL_TRACES_ENDPOINT", f"{PROM_BASE.rstrip('/')}/api/v1/otlp/v1/traces")
 
 _tracer = None
 _meter = None
@@ -61,8 +63,8 @@ try:
     from opentelemetry.sdk.metrics import MeterProvider
     from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
     from opentelemetry.sdk.resources import Resource
-    from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
-    from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExporter
+    from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+    from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
     from opentelemetry.instrumentation.flask import FlaskInstrumentor
     from opentelemetry.instrumentation.requests import RequestsInstrumentor
 
@@ -74,17 +76,17 @@ if _otel_available and OTEL_ENDPOINT:
     try:
         resource = Resource.create({"service.name": "home-finder", "service.version": "1.0.0"})
 
-        # Traces → Embr OTLP collector (gRPC, insecure inside the sandbox)
+        # Traces → OTLP/HTTP (Prometheus drops these; they go nowhere unless OTEL_TRACES_ENDPOINT overrides)
         trace_provider = TracerProvider(resource=resource)
         trace_provider.add_span_processor(
-            BatchSpanProcessor(OTLPSpanExporter(endpoint=OTEL_ENDPOINT, insecure=True))
+            BatchSpanProcessor(OTLPSpanExporter(endpoint=TRACES_ENDPOINT))
         )
         trace.set_tracer_provider(trace_provider)
         _tracer = trace.get_tracer("home-finder")
 
-        # Metrics → same Embr OTLP collector; project telemetry config fans out to Prometheus
+        # Metrics → Prometheus OTLP receiver
         metric_reader = PeriodicExportingMetricReader(
-            OTLPMetricExporter(endpoint=OTEL_ENDPOINT, insecure=True),
+            OTLPMetricExporter(endpoint=METRICS_ENDPOINT),
             export_interval_millis=15000,
         )
         metric_provider = MeterProvider(resource=resource, metric_readers=[metric_reader])
@@ -103,7 +105,7 @@ if _otel_available and OTEL_ENDPOINT:
         FlaskInstrumentor.instrument_app(app)
         RequestsInstrumentor().instrument()
 
-        logger.info("OpenTelemetry initialized → OTLP endpoint: %s", OTEL_ENDPOINT)
+        logger.info("OpenTelemetry initialized → metrics: %s, traces: %s", METRICS_ENDPOINT, TRACES_ENDPOINT)
     except Exception as exc:
         logger.warning("OpenTelemetry setup failed (continuing without): %s", exc)
 
