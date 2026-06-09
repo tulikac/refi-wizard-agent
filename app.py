@@ -24,6 +24,14 @@ def _load_env_file():
 
 _load_env_file()
 
+# Python 3.14 sandbox image is missing a default CA bundle path — point SSL at certifi
+try:
+    import certifi
+    os.environ.setdefault("SSL_CERT_FILE", certifi.where())
+    os.environ.setdefault("REQUESTS_CA_BUNDLE", certifi.where())
+except ImportError:
+    pass
+
 app = Flask(__name__)
 
 # ── OpenTelemetry ────────────────────────────────────────────────────────────
