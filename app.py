@@ -283,11 +283,14 @@ def _record_error(exc, context=""):
 # ── OpenAI ───────────────────────────────────────────────────────────────────
 
 def _get_openai_client():
+    import httpx
+    import certifi
     return OpenAI(
         api_key="placeholder",
         base_url=ENDPOINT.rstrip("/") + "/openai/v1/",
         default_headers={"api-key": API_KEY},
         timeout=55.0,
+        http_client=httpx.Client(verify=certifi.where(), timeout=55.0),
     )
 
 
